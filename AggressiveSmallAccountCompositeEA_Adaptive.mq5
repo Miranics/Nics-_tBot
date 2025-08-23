@@ -12,6 +12,8 @@
 #property strict
 #property description "Aggressive small account composite EA with adaptive risk sizing, pullback & compression entries, multi-timeframe filters, protections."
 
+#include <Arrays/ArrayObj.mqh>
+
 //==================================================================//
 // Inputs & Enums                                                   //
 //==================================================================//
@@ -157,6 +159,8 @@ void ApplyTrailing(PositionState &ps,double atrPoints);
 void RecordClosedTrade();
 bool CheckDailyProtections(string &reason);
 void Log(int level,string tag,string msg);
+bool ModifyPositionSLTP(ulong position_ticket,double newSL,double newTP);
+ulong GetPositionTicketBySymbol(const string symbol);
 
 // Utility helpers
 int SplitString(const string s, const string delimiter, string &arr[]);
@@ -207,7 +211,7 @@ PositionState* FindPositionByTicket(ulong ticket){
 
 int CountOpenPositionsSymbol(const string symbol){
    int c=0;
-   for(int i=0;i<PositionsTotal();++i){ if(PositionGetSymbol(i) && PositionGetString(POSITION_SYMBOL)==symbol) c++; }
+   for(int i=0;i<PositionsTotal();++i){ if(PositionSelectByIndex(i)){ if(PositionGetString(POSITION_SYMBOL)==symbol) c++; }}
    return c;
 }
 
@@ -511,58 +515,84 @@ void ApplyTrailing(PositionState &ps,double atrPoints){
    if(trailingMode==TRAIL_ATR){
       if(ps.direction==1){
          double newSL = SymbolInfoDouble(ps.symbol,SYMBOL_BID) - atrTrail; if(newSL > ps.stopLossPrice){
-            TradePositionModify(ps.ticket,newSL,ps.takeProfitPrice);
+            ModifyPositionSLTP(ps.ticket,newSL,ps.takeProfitPrice);
             ps.stopLossPrice=newSL; Log(LOG_VERBOSE,"TRAIL","Update SL "+DoubleToString(newSL,5));
          }
       } else {
          double newSL = SymbolInfoDouble(ps.symbol,SYMBOL_ASK) + atrTrail; if(newSL < ps.stopLossPrice || ps.stopLossPrice==0){
-            TradePositionModify(ps.ticket,newSL,ps.takeProfitPrice);
+            ModifyPositionSLTP(ps.ticket,newSL,ps.takeProfitPrice);
             ps.stopLossPrice=newSL; Log(LOG_VERBOSE,"TRAIL","Update SL "+DoubleToString(newSL,5));
          }
       }
    }
 }
 
+bool ModifyPositionSLTP(ulong position_ticket,double newSL,double newTP){
+   // locate symbol
+   for(int i=0;i<PositionsTotal();++i){
+      if(PositionSelectByIndex(i) && PositionGetInteger(POSITION_TICKET)==position_ticket){
+         string sym=PositionGetString(POSITION_SYMBOL);
+         MqlTradeRequest r; MqlTradeResult rs; ZeroMemory(r); ZeroMemory(rs);
+         r.action=TRADE_ACTION_SLTP; r.position=position_ticket; r.symbol=sym; 
+         if(newSL>0) r.sl=NormalizeDouble(newSL,(int)SymbolInfoInteger(sym,SYMBOL_DIGITS));
+         if(newTP>0) r.tp=NormalizeDouble(newTP,(int)SymbolInfoInteger(sym,SYMBOL_DIGITS));
+         if(!OrderSend(r,rs)) return false; if(rs.retcode!=10009 && rs.retcode!=10008) return false; return true;
+      }
+   }
+   return false;
+}
+
+ulong GetPositionTicketBySymbol(const string symbol){ if(PositionSelect(symbol)) return (ulong)PositionGetInteger(POSITION_TICKET); return 0; }
+
 void ManageOpenPositions(){
    // Refresh actual tickets mapping; remove closed
    for(int i=g_positions.Total()-1;i>=0;--i){
       PositionState *ps=(PositionState*)g_positions.At(i); if(!ps) continue;
       bool alive=false; bool pending=false;
-      // Check if still open position
-      for(int p=0;p<PositionsTotal();++p){ if(PositionGetSymbol(p) && PositionGetInteger(POSITION_TICKET)==ps.ticket){ alive=true; break; } }
-      // Check pending
-      for(int o=0;o<OrdersTotal() && !alive; ++o){ if(OrderSelect(o,SELECT_BY_POS,MODE_TRADES)){ if(OrderGetInteger(ORDER_TICKET)==ps.ticket){ pending=true; break; }} }
-      if(!alive && !pending){ // closed entirely
-         delete g_positions.At(i); g_positions.Delete(i); continue; }
-      if(pending){
-         // expiration check
-         int barsPassed = (int)((TimeCurrent()-ps.pendingPlacedTime)/PeriodSeconds(InpChartTF));
-         double atrPoints; double dummy; if(!VolatilityOK(ps.symbol,atrPoints) || !SpreadOK(ps.symbol) || barsPassed>ps.expiryBars){
-            // cancel order
-            if(OrderSelect(ps.ticket)){ MqlTradeRequest rq; MqlTradeResult rr; ZeroMemory(rq); ZeroMemory(rr); rq.action=TRADE_ACTION_REMOVE; rq.order=ps.ticket; OrderSend(rq,rr); Log(LOG_VERBOSE,"PENDING_CANCEL",ps.symbol+" expired/invalid"); }
-            delete g_positions.At(i); g_positions.Delete(i); continue;
+      ulong symPosTicket=GetPositionTicketBySymbol(ps->symbol);
+      if(ps->isCompressionPending){
+         // Check if original pending order still exists
+         bool orderExists=false; for(int o=0;o<OrdersTotal();++o){ if(OrderSelect(o,SELECT_BY_POS,MODE_TRADES)){ if(OrderGetInteger(ORDER_TICKET)==ps->ticket){ orderExists=true; break; } } }
+         if(orderExists){
+            pending=true;
+            int barsPassed = (int)((TimeCurrent()-ps->pendingPlacedTime)/PeriodSeconds(InpChartTF));
+            double atrPoints; if(!VolatilityOK(ps->symbol,atrPoints) || !SpreadOK(ps->symbol) || barsPassed>ps->expiryBars){
+               MqlTradeRequest rq; MqlTradeResult rr; ZeroMemory(rq); ZeroMemory(rr); rq.action=TRADE_ACTION_REMOVE; rq.order=ps->ticket; if(OrderSend(rq,rr)) Log(LOG_VERBOSE,"PENDING_CANCEL",ps->symbol+" expired/invalid");
+               delete g_positions.At(i); g_positions.Delete(i); continue;
+            }
+            continue; // still pending
+         } else {
+            // Filled or canceled. If filled, there should be a position now.
+            if(symPosTicket>0){ ps->ticket=symPosTicket; ps->isCompressionPending=false; ps->entryPrice=PositionGetDouble(POSITION_PRICE_OPEN); ps->stopLossPrice=PositionGetDouble(POSITION_SL); ps->takeProfitPrice=PositionGetDouble(POSITION_TP); alive=true; }
+            else { // canceled
+               delete g_positions.At(i); g_positions.Delete(i); continue; }
          }
-         continue; // no further mgmt for pending
+      } else {
+         if(symPosTicket==ps->ticket) alive=true; else alive=false;
       }
+      if(!alive){ // closed
+         delete g_positions.At(i); g_positions.Delete(i); continue; }
       // Manage active position
-      double atrPoints; if(!VolatilityOK(ps.symbol,atrPoints)) atrPoints=ps.initialStopPoints; // fallback
+      double atrPoints; if(!VolatilityOK(ps->symbol,atrPoints)) atrPoints=ps->initialStopPoints; // fallback
       // Partial TP
-      if(partialTPEnabled && !ps.partialTaken){
-         double price=SymbolInfoDouble(ps.symbol, ps.direction==1?SYMBOL_BID:SYMBOL_ASK);
-         double movePoints = (ps.direction==1)? (price - ps.entryPrice)/SymbolInfoDouble(ps.symbol,SYMBOL_POINT) : (ps.entryPrice - price)/SymbolInfoDouble(ps.symbol,SYMBOL_POINT);
-         double R = movePoints / ps.initialStopPoints;
+      if(partialTPEnabled && !ps->partialTaken){
+         double price=SymbolInfoDouble(ps->symbol, ps->direction==1?SYMBOL_BID:SYMBOL_ASK);
+         double movePoints = (ps->direction==1)? (price - ps->entryPrice)/SymbolInfoDouble(ps->symbol,SYMBOL_POINT) : (ps->entryPrice - price)/SymbolInfoDouble(ps->symbol,SYMBOL_POINT);
+         double R = movePoints / ps->initialStopPoints;
          if(R >= partialTP_R){
             // close partial
-            double volume=0.0; for(int p=0;p<PositionsTotal();++p){ if(PositionGetSymbol(p) && PositionGetInteger(POSITION_TICKET)==ps.ticket){ volume=PositionGetDouble(POSITION_VOLUME); break; } }
-            double closeVol = volume * (partialTPPercent/100.0);
-            MqlTradeRequest rq; MqlTradeResult rr; ZeroMemory(rq); ZeroMemory(rr); rq.action=TRADE_ACTION_DEAL; rq.symbol=ps.symbol; rq.magic=baseMagicNumber; rq.deviation=slippagePoints; rq.volume=NormalizeDouble(closeVol,2); 
-            rq.type= ps.direction==1? ORDER_TYPE_SELL: ORDER_TYPE_BUY; rq.price=SymbolInfoDouble(ps.symbol, ps.direction==1?SYMBOL_BID:SYMBOL_ASK); 
-            OrderSend(rq,rr); ps.partialTaken=true; Log(LOG_IMPORTANT,"PARTIAL",ps.symbol+" R="+DoubleToString(R,2));
-            // move SL to BE + buffer
-            double buffer = ps.initialStopPoints * breakEvenBufferFraction * SymbolInfoDouble(ps.symbol,SYMBOL_POINT);
-            double newSL = ps.direction==1? (ps.entryPrice + buffer) : (ps.entryPrice - buffer);
-            TradePositionModify(ps.ticket,newSL,ps.takeProfitPrice);
-            ps.stopLossPrice=newSL; Log(LOG_VERBOSE,"SL_BE",ps.symbol);
+            if(PositionSelect(ps->symbol)){
+               double volume=PositionGetDouble(POSITION_VOLUME);
+               double closeVol = volume * (partialTPPercent/100.0);
+               MqlTradeRequest rq; MqlTradeResult rr; ZeroMemory(rq); ZeroMemory(rr); rq.action=TRADE_ACTION_DEAL; rq.symbol=ps->symbol; rq.magic=baseMagicNumber; rq.deviation=slippagePoints; rq.volume=NormalizeDouble(closeVol,2); 
+               rq.type= ps->direction==1? ORDER_TYPE_SELL: ORDER_TYPE_BUY; rq.price=SymbolInfoDouble(ps->symbol, ps->direction==1?SYMBOL_BID:SYMBOL_ASK); 
+               OrderSend(rq,rr); ps->partialTaken=true; Log(LOG_IMPORTANT,"PARTIAL",ps->symbol+" R="+DoubleToString(R,2));
+               // move SL to BE + buffer
+               double buffer = ps->initialStopPoints * breakEvenBufferFraction * SymbolInfoDouble(ps->symbol,SYMBOL_POINT);
+               double newSL = ps->direction==1? (ps->entryPrice + buffer) : (ps->entryPrice - buffer);
+               ModifyPositionSLTP(ps->ticket,newSL,ps->takeProfitPrice);
+               ps->stopLossPrice=newSL; Log(LOG_VERBOSE,"SL_BE",ps->symbol);
+            }
          }
       }
       // Trailing
