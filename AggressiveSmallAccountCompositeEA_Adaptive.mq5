@@ -158,7 +158,7 @@ double ComputeAdaptiveRiskPercent();
 void EvaluateDynamicRiskThrottle();
 bool PlaceTrade(const string symbol,EntryType et,int bias,double atrPoints,double entryPrice,double compHigh,double compLow,string &reason);
 void ManageOpenPositions();
-void ApplyTrailing(PositionState &ps,double atrPoints);
+void ApplyTrailing(PositionState *ps,double atrPoints);
 void RecordClosedTrade();
 bool CheckDailyProtections(string &reason);
 void Log(int level,string tag,string msg);
@@ -510,21 +510,22 @@ bool PlaceTrade(const string symbol,EntryType et,int bias,double atrPoints,doubl
    return true;
 }
 
-void ApplyTrailing(PositionState &ps,double atrPoints){
+void ApplyTrailing(PositionState *ps,double atrPoints){
+   if(!ps) return;
    if(trailingMode==TRAIL_NONE) return;
-   if(ps.partialTaken==false) return;
-   double point=SymbolInfoDouble(ps.symbol,SYMBOL_POINT); if(point<=0) point=_Point;
+   if(!ps->partialTaken) return;
+   double point=SymbolInfoDouble(ps->symbol,SYMBOL_POINT); if(point<=0) point=_Point;
    double atrTrail = atrPoints * trailingATRMult * point;
    if(trailingMode==TRAIL_ATR){
-      if(ps.direction==1){
-         double newSL = SymbolInfoDouble(ps.symbol,SYMBOL_BID) - atrTrail; if(newSL > ps.stopLossPrice){
-            ModifyPositionSLTP(ps.ticket,newSL,ps.takeProfitPrice);
-            ps.stopLossPrice=newSL; Log(LOG_VERBOSE,"TRAIL","Update SL "+DoubleToString(newSL,5));
+      if(ps->direction==1){
+         double newSL = SymbolInfoDouble(ps->symbol,SYMBOL_BID) - atrTrail; if(newSL > ps->stopLossPrice){
+            ModifyPositionSLTP(ps->ticket,newSL,ps->takeProfitPrice);
+            ps->stopLossPrice=newSL; Log(LOG_VERBOSE,"TRAIL","Update SL "+DoubleToString(newSL,5));
          }
       } else {
-         double newSL = SymbolInfoDouble(ps.symbol,SYMBOL_ASK) + atrTrail; if(newSL < ps.stopLossPrice || ps.stopLossPrice==0){
-            ModifyPositionSLTP(ps.ticket,newSL,ps.takeProfitPrice);
-            ps.stopLossPrice=newSL; Log(LOG_VERBOSE,"TRAIL","Update SL "+DoubleToString(newSL,5));
+         double newSL = SymbolInfoDouble(ps->symbol,SYMBOL_ASK) + atrTrail; if(newSL < ps->stopLossPrice || ps->stopLossPrice==0){
+            ModifyPositionSLTP(ps->ticket,newSL,ps->takeProfitPrice);
+            ps->stopLossPrice=newSL; Log(LOG_VERBOSE,"TRAIL","Update SL "+DoubleToString(newSL,5));
          }
       }
    }
@@ -599,7 +600,7 @@ void ManageOpenPositions(){
          }
       }
       // Trailing
-      ApplyTrailing(*ps,atrPoints);
+   ApplyTrailing(ps,atrPoints);
    }
 }
 
