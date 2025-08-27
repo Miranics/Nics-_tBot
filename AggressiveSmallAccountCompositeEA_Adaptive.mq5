@@ -82,7 +82,8 @@ input bool futurePyramidingEnabled=false; input bool enableNewsFilterStub=true;
 //==================================================================//
 // Structs                                                          //
 //==================================================================//
-struct SymbolProfile {
+class SymbolProfile : public CObject {
+public:
    string symbol;
    bool   isGold;
    int    minATRPoints;
@@ -90,7 +91,8 @@ struct SymbolProfile {
    double atrStopMult;
 };
 
-struct PositionState {
+class PositionState : public CObject {
+public:
    ulong  ticket;
    string symbol;
    double entryPrice;
@@ -111,7 +113,8 @@ struct PositionState {
    bool   counted;
 };
 
-struct TradePerformanceRecord {
+class TradePerformanceRecord : public CObject {
+public:
    ulong ticket;
    double riskAmount;
    double profitAmount;
@@ -199,13 +202,13 @@ bool IsGold(const string symbol){ return (StringFind(symbol,"XAU")==0 || symbol=
 SymbolProfile* GetProfile(const string symbol){
    for(int i=0;i<g_symbolProfiles.Total();++i){
       SymbolProfile *p=(SymbolProfile*)g_symbolProfiles.At(i);
-      if(p!=NULL && p.symbol==symbol) return p;
+      if(p!=NULL && p->symbol==symbol) return p;
    }
    return NULL;
 }
 
 PositionState* FindPositionByTicket(ulong ticket){
-   for(int i=0;i<g_positions.Total();++i){ PositionState *ps=(PositionState*)g_positions.At(i); if(ps && ps.ticket==ticket) return ps; }
+   for(int i=0;i<g_positions.Total();++i){ PositionState *ps=(PositionState*)g_positions.At(i); if(ps && ps->ticket==ticket) return ps; }
    return NULL;
 }
 
@@ -359,7 +362,7 @@ bool ComputeStopPoints(const string symbol,int bias,double atrPoints,double &sto
    double price = SymbolInfoDouble(symbol,bias==1?SYMBOL_ASK:SYMBOL_BID);
    entryPrice=price;
    if(mode==SLMODE_ATR){
-      SymbolProfile *p=GetProfile(symbol); double mult = p?p.atrStopMult:1.2;
+   SymbolProfile *p=GetProfile(symbol); double mult = p?p->atrStopMult:1.2;
       stopLossPoints = atrPoints * mult;
    } else { // swing mode
       int look=swingLookbackBars; MqlRates rates[]; if(CopyRates(symbol,InpChartTF,1,look+5,rates) < look+1) return false;
@@ -500,7 +503,7 @@ bool PlaceTrade(const string symbol,EntryType et,int bias,double atrPoints,doubl
    }
    // Track
    PositionState *ps=new PositionState; ZeroMemory(ps);
-   ps.ticket=res.order; ps.symbol=symbol; ps.entryPrice=price; ps.stopLossPrice=req.sl; ps.takeProfitPrice=req.tp; ps.initialStopPoints=stopLossPoints; ps.initialRiskAmount=stopLossPoints*PointValuePerPoint(symbol)*lots; ps.partialTaken=false; ps.rrPrimary=rrPrimary; ps.rrSecondary=rrSecondary; ps.direction=bias; ps.openTime=TimeCurrent(); ps.isCompressionPending=(et==ENTRY_COMPRESSION); ps.pendingPlacedTime=TimeCurrent(); ps.compressionHigh=compHigh; ps.compressionLow=compLow; ps.expiryBars=pendingExpiryBars; ps.counted=false;
+   ps->ticket=res.order; ps->symbol=symbol; ps->entryPrice=price; ps->stopLossPrice=req.sl; ps->takeProfitPrice=req.tp; ps->initialStopPoints=stopLossPoints; ps->initialRiskAmount=stopLossPoints*PointValuePerPoint(symbol)*lots; ps->partialTaken=false; ps->rrPrimary=rrPrimary; ps->rrSecondary=rrSecondary; ps->direction=bias; ps->openTime=TimeCurrent(); ps->isCompressionPending=(et==ENTRY_COMPRESSION); ps->pendingPlacedTime=TimeCurrent(); ps->compressionHigh=compHigh; ps->compressionLow=compLow; ps->expiryBars=pendingExpiryBars; ps->counted=false;
    g_positions.Add(ps);
    reason="OK";
    Log(LOG_IMPORTANT,"ENTRY",symbol+" et="+IntegerToString((int)et)+" risk%="+DoubleToString(riskPercent,2)+" lots="+DoubleToString(lots,2));
@@ -509,7 +512,7 @@ bool PlaceTrade(const string symbol,EntryType et,int bias,double atrPoints,doubl
 
 void ApplyTrailing(PositionState &ps,double atrPoints){
    if(trailingMode==TRAIL_NONE) return;
-   if(ps.partialTaken==false) return; // start trailing after partial (after >=1R)
+   if(ps.partialTaken==false) return;
    double point=SymbolInfoDouble(ps.symbol,SYMBOL_POINT); if(point<=0) point=_Point;
    double atrTrail = atrPoints * trailingATRMult * point;
    if(trailingMode==TRAIL_ATR){
@@ -643,7 +646,7 @@ void Log(int level,string tag,string msg){ if(level>logVerbosity) return; Print(
 int OnInit(){
    ArrayFree(g_symbols); SplitString(InpSymbolsWhitelist,",",g_symbols);
    g_symbolProfiles.Clear(); g_positions.Clear(); g_performance.Clear();
-   for(int i=0;i<ArraySize(g_symbols);++i){ string s=StringTrim(g_symbols[i]); if(StringLen(s)==0) continue; SymbolSelect(s,true); SymbolProfile *p=new SymbolProfile; p.symbol=s; p.isGold=IsGold(s); p.minATRPoints=p.isGold?minATRPointsGold:minATRPointsDefault; p.maxATRPoints=p.isGold?maxATRPointsGold:maxATRPointsDefault; p.atrStopMult=p.isGold?atrStopMultGold:atrStopMultDefault; g_symbolProfiles.Add(p); }
+   for(int i=0;i<ArraySize(g_symbols);++i){ string s=StringTrim(g_symbols[i]); if(StringLen(s)==0) continue; SymbolSelect(s,true); SymbolProfile *p=new SymbolProfile; p->symbol=s; p->isGold=IsGold(s); p->minATRPoints=p->isGold?minATRPointsGold:minATRPointsDefault; p->maxATRPoints=p->isGold?maxATRPointsGold:maxATRPointsDefault; p->atrStopMult=p->isGold?atrStopMultGold:atrStopMultDefault; g_symbolProfiles.Add(p); }
    g_state.dayStartEquity=AccountInfoDouble(ACCOUNT_EQUITY); g_state.dayDate=TimeCurrent() - (TimeCurrent()%86400); g_state.peakEquity=g_state.dayStartEquity; g_state.throttleActive=false; g_state.consecutiveLosses=0; g_state.lastAdaptiveRiskPercent=baseRiskPercent; 
    Log(LOG_IMPORTANT,"INIT","EA initialized. Symbols="+IntegerToString((int)g_symbolProfiles.Total()));
    return(INIT_SUCCEEDED);
@@ -661,7 +664,7 @@ void OnTick(){
 
    // Iterate symbols
    for(int i=0;i<g_symbolProfiles.Total();++i){
-      SymbolProfile *prof=(SymbolProfile*)g_symbolProfiles.At(i); if(!prof) continue; string sym=prof.symbol;
+      SymbolProfile *prof=(SymbolProfile*)g_symbolProfiles.At(i); if(!prof) continue; string sym=prof->symbol;
       string reason=""; if(!AllowNewTrade(sym,reason)){ if(logVerbosity>=LOG_DEBUG) Log(LOG_DEBUG,"SKIP",sym+" reason="+reason); continue; }
       double atrPoints; if(!VolatilityOK(sym,atrPoints)){ Log(LOG_VERBOSE,"VOLATILITY_FILTER_FAIL",sym); continue; }
       int bias=HTFTrendBias(sym); if(bias==0){ Log(LOG_DEBUG,"NO_BIAS",sym); continue; }
